@@ -50,7 +50,7 @@ jobs:
         run: |
           Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
           python -m pip install --upgrade certifi
-          iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1'))
+          iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1')) -Yes
 
       - name: Cache Craft downloads
         uses: actions/cache@v4
