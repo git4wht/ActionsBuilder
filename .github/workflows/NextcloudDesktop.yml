@@ -48,7 +48,7 @@ jobs:
       - name: Cleanup existing Craft directory
         shell: powershell
         run: |
-          $craftHome = "$env:USERPROFILE\.craft"
+          $craftHome = "$env:CRAFT_ROOT"
           if (Test-Path $craftHome) {
               Write-Host "Removing existing Craft directory..."
               Remove-Item -Recurse -Force $craftHome
