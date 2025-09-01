@@ -1,0 +1,96 @@
+name: Multi-Repo Build Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_ref:
+        description: "构建分支或标签"
+        required: true
+        default: "main"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      BUILD_DIR: ${{ github.workspace }}/build
+      ARTIFACT_DIR: ${{ github.workspace }}/artifacts
+      TEMPLATE_DIR: ${{ github.workspace }}/template
+
+    steps:
+      # --------------------------
+      # Checkout 模板仓库（公共或私有）
+      - name: Checkout Template Repo
+        uses: actions/checkout@v4
+        with:
+          repository: your-org/build-template
+          token: ${{ secrets.PAT }}  # 公私仓库都可
+          path: template
+
+      # --------------------------
+      # Checkout 私有仓库
+      - name: Checkout Private Repo 1
+        uses: actions/checkout@v4
+        with:
+          repository: your-org/private-repo1
+          token: ${{ secrets.PAT }}
+          path: repo1
+
+      - name: Checkout Private Repo 2
+        uses: actions/checkout@v4
+        with:
+          repository: your-org/private-repo2
+          token: ${{ secrets.PAT }}
+          path: repo2
+
+      # --------------------------
+      # Checkout 公共仓库
+      - name: Checkout Public Repo
+        uses: actions/checkout@v4
+        with:
+          repository: public-org/public-repo
+          path: publicrepo
+
+      # --------------------------
+      # 编译步骤
+      - name: Setup Build Environment
+        run: |
+          mkdir -p $BUILD_DIR
+          sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      - name: Configure and Build
+        run: |
+          cd $BUILD_DIR
+          # 示例：CMake + Ninja
+          cmake ../repo1 -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .
+
+      # --------------------------
+      # 无论成功失败都执行清理
+      - name: Cleanup Temporary Files
+        if: always()
+        run: |
+          echo "Cleaning build directory..."
+          rm -rf $BUILD_DIR/tmp
+          rm -rf $BUILD_DIR/cache
+
+      # --------------------------
+      # 上传产物到 FTP（成功时）
+      - name: Upload to FTP
+        if: success()
+        uses: SamKirkland/FTP-Deploy-Action@v5
+        with:
+          server: ${{ secrets.FTP_HOST }}
+          username: ${{ secrets.FTP_USER }}
+          password: ${{ secrets.FTP_PASS }}
+          local-dir: $BUILD_DIR/output
+          server-dir: /remote/path
+
+      # --------------------------
+      # 上传产物到 GitHub Release（可选）
+      - name: Upload Release Assets
+        if: success()
+        uses: softprops/action-gh-release@v1
+        with:
+          files: $BUILD_DIR/output/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
