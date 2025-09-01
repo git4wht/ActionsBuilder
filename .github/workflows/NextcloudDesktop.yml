@@ -62,7 +62,11 @@ jobs:
         run: |
           Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
           python -m pip install --upgrade certifi
-          iex ((New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1')) -root $env:CRAFT_ROOT -branch 'master' -use-defaults
+          $craftScript = "$env:TEMP\install_craft.ps1"
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1" -OutFile $craftScript
+          powershell -NoProfile -ExecutionPolicy Bypass -File $craftScript `
+           -root "$env:CRAFT_ROOT" `
+           -use-defaults
 
       - name: Cache Craft downloads
         uses: actions/cache@v4
