@@ -21,9 +21,9 @@ jobs:
     runs-on: windows-2022
     env:
       # 给 CRAFT_ROOT 动态加 run_id，避免和上一次构建冲突
-      CRAFT_ROOT: C:\CraftRoot\${{ github.run_id }}
-      QT_PLUGIN_PATH: C:\CraftRoot\${{ github.run_id }}\bin\plugins
-      CMAKE_PREFIX_PATH: C:\CraftRoot\${{ github.run_id }}
+      CRAFT_ROOT: C:\CraftRoot
+      QT_PLUGIN_PATH: C:\CraftRoot\bin\plugins
+      CMAKE_PREFIX_PATH: C:\CraftRoot
       DESKTOP_SRC: ${{ github.workspace }}\desktop
       BUILD_DIR:   ${{ github.workspace }}\build
       BLUEPRINTS:  ${{ github.workspace }}\desktop-client-blueprints
@@ -62,7 +62,10 @@ jobs:
         run: |
           Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
           python -m pip install --upgrade certifi
-          iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1'))
+          iex ((New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1')) `
+           -root $env:CRAFT_ROOT `
+           -branch 'master' `
+           -use-defaults
 
       - name: Cache Craft downloads
         uses: actions/cache@v4
