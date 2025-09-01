@@ -1,0 +1,140 @@
+name: Multi-Platform Build & Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_ref:
+        description: "构建分支或标签"
+        required: true
+        default: "main"
+      build_msi:
+        description: "Windows 是否打包 MSI"
+        required: false
+        default: "true"
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-2022, ubuntu-22.04, macos-13]
+    env:
+      BUILD_DIR: ${{ github.workspace }}/build
+      ARTIFACT_DIR: ${{ github.workspace }}/artifacts
+      TEMPLATE_DIR: ${{ github.workspace }}/template
+      FTP_DIR: /remote/path
+
+    steps:
+      # --------------------------
+      # Checkout this repo (CI workflow)
+      - name: Checkout CI repo
+        uses: actions/checkout@v4
+
+      # --------------------------
+      # Checkout 模板仓库
+      - name: Checkout Template Repo
+        uses: actions/checkout@v4
+        with:
+          repository: your-org/build-template
+          token: ${{ secrets.PAT }}
+          path: template
+
+      # --------------------------
+      # Checkout 私有仓库
+      - name: Checkout Private Repo 1
+        uses: actions/checkout@v4
+        with:
+          repository: your-org/private-repo1
+          token: ${{ secrets.PAT }}
+          path: repo1
+
+      - name: Checkout Private Repo 2
+        uses: actions/checkout@v4
+        with:
+          repository: your-org/private-repo2
+          token: ${{ secrets.PAT }}
+          path: repo2
+
+      # --------------------------
+      # Checkout 公共仓库
+      - name: Checkout Public Repo
+        uses: actions/checkout@v4
+        with:
+          repository: public-org/public-repo
+          path: publicrepo
+
+      # --------------------------
+      # Setup build environment
+      - name: Setup build environment
+        if: runner.os == 'Windows'
+        run: |
+          choco install -y ninja cmake wixtoolset python3
+          python -m pip install --upgrade certifi
+      - name: Setup build environment
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake python3-pip zip
+      - name: Setup build environment
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install cmake ninja python3 zip
+
+      # --------------------------
+      # Build & translations
+      - name: Configure & Build
+        run: |
+          mkdir -p $BUILD_DIR && cd $BUILD_DIR
+          cmake ../repo1 -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build .
+          # 生成多语言资源（Qt / i18n）
+          if [ -d "../repo1/translations" ]; then
+            cmake --build . --target release_translations || true
+          fi
+
+      # --------------------------
+      # Package
+      - name: Package artifacts
+        run: |
+          mkdir -p $ARTIFACT_DIR
+          if [[ "${{ runner.os }}" == "Windows" && "${{ github.event.inputs.build_msi }}" == "true" ]]; then
+            # MSI 打包示例
+            pushd $BUILD_DIR
+            candle.exe client.wxs
+            light.exe client.wixobj -o $ARTIFACT_DIR/client.msi
+            popd
+          fi
+          # ZIP 打包
+          zip -r $ARTIFACT_DIR/client-${{ runner.os }}.zip $BUILD_DIR/*
+
+      # --------------------------
+      # Upload to GitHub Release
+      - name: Upload Release Assets
+        if: success()
+        uses: softprops/action-gh-release@v1
+        with:
+          files: $ARTIFACT_DIR/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # --------------------------
+      # Upload to FTP
+      - name: Upload to FTP
+        if: success()
+        uses: SamKirkland/FTP-Deploy-Action@v5
+        with:
+          server: ${{ secrets.FTP_HOST }}
+          username: ${{ secrets.FTP_USER }}
+          password: ${{ secrets.FTP_PASS }}
+          local-dir: $ARTIFACT_DIR
+          server-dir: $FTP_DIR
+
+      # --------------------------
+      # Cleanup (always)
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Cleaning build artifacts..."
+          rm -rf $BUILD_DIR/tmp
+          rm -rf $BUILD_DIR/cache
