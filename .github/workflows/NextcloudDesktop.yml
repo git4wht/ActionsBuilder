@@ -20,9 +20,10 @@ jobs:
   build-win:
     runs-on: windows-2022
     env:
-      CRAFT_ROOT: C:\CraftRoot
-      QT_PLUGIN_PATH: C:\CraftRoot\bin\plugins
-      CMAKE_PREFIX_PATH: C:\CraftRoot
+      # 给 CRAFT_ROOT 动态加 run_id，避免和上一次构建冲突
+      CRAFT_ROOT: C:\CraftRoot\${{ github.run_id }}
+      QT_PLUGIN_PATH: C:\CraftRoot\${{ github.run_id }}\bin\plugins
+      CMAKE_PREFIX_PATH: C:\CraftRoot\${{ github.run_id }}
       DESKTOP_SRC: ${{ github.workspace }}\desktop
       BUILD_DIR:   ${{ github.workspace }}\build
       BLUEPRINTS:  ${{ github.workspace }}\desktop-client-blueprints
@@ -44,16 +45,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      
-      - name: Cleanup existing Craft directory
+
+      - name: Cleanup existing Craft directories
         shell: powershell
         run: |
-          $craftHome = "$env:CRAFT_ROOT"
-          if (Test-Path $craftHome) {
-              Write-Host "Removing existing Craft directory..."
-              Remove-Item -Recurse -Force $craftHome
+          $dirs = @("$env:CRAFT_ROOT", "$env:USERPROFILE\.craft")
+          foreach ($d in $dirs) {
+            if (Test-Path $d) {
+              Write-Host "Removing existing Craft directory: $d"
+              Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue
+            }
           }
-      
+
       - name: Install Craft (KDE)
         shell: powershell
         run: |
@@ -61,12 +64,11 @@ jobs:
           python -m pip install --upgrade certifi
           iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1'))
 
-
       - name: Cache Craft downloads
         uses: actions/cache@v4
         with:
           path: |
-            C:\CraftRoot\download
+            ${{ env.CRAFT_ROOT }}\download
             C:\Users\runneradmin\AppData\Local\craft
           key: craft-${{ runner.os }}-qt6-${{ hashFiles('**/blueprints.lock', '**/craft.lock') }}
           restore-keys: |
@@ -119,20 +121,16 @@ jobs:
         shell: powershell
         run: |
           git clone https://github.com/nextcloud/client-building.git "$env:CLIENT_BUILDING"
-          # 环境变量覆盖：不开 NSIS、仅 MSI、默认不签名（可通过 inputs 切换）
           $env:BUILD_INSTALLER = "0"
           $env:BUILD_INSTALLER_MSI = "1"
           $env:USE_CODE_SIGNING = if ('${{ github.event.inputs.sign_binaries }}' -eq 'true') { "1" } else { "0" }
-          # 如果需要签名：设置证书与密码（在仓库 Secrets 中提供）
           if ($env:USE_CODE_SIGNING -eq "1") {
             $env:WINDOWS_SIGNING_CERT_B64 = "${{ secrets.WINDOWS_SIGNING_CERT_B64 }}"
             $env:WINDOWS_SIGNING_CERT_PASS = "${{ secrets.WINDOWS_SIGNING_CERT_PASS }}"
-            # 还原证书到临时 PFX（可按你的签名方案调整）
             $pfx = "$env:RUNNER_TEMP\codesign.pfx"
             [IO.File]::WriteAllBytes($pfx,[Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_B64))
             $env:CODESIGN_PFX = $pfx
           }
-          # 运行收集与 MSI 打包脚本
           cd "$env:CLIENT_BUILDING"
           ./build-installer-collect.bat
           ./build-installer-msi.bat
@@ -142,20 +140,14 @@ jobs:
         run: |
           $Out = "${{ github.workspace }}\artifacts"
           New-Item -ItemType Directory -Force -Path $Out | Out-Null
-          # 可执行与依赖（安装目录）
           if (Test-Path "$env:BUILD_DIR\install") {
             7z a -r "$Out\nextcloud-desktop-install-tree.zip" "$env:BUILD_DIR\install\*"
           }
-          # 翻译资源（证明多语言）
           if (Test-Path "$env:BUILD_DIR\install\translations") {
             7z a -r "$Out\translations-qm.zip" "$env:BUILD_DIR\install\translations\*.qm"
-          } else {
-            # 常见位置（不同版本可能在 resources/translations）
-            if (Test-Path "$env:BUILD_DIR\resources\translations") {
-              7z a -r "$Out\translations-qm.zip" "$env:BUILD_DIR\resources\translations\*.qm"
-            }
+          } elseif (Test-Path "$env:BUILD_DIR\resources\translations") {
+            7z a -r "$Out\translations-qm.zip" "$env:BUILD_DIR\resources\translations\*.qm"
           }
-          # MSI（若已打包）
           Get-ChildItem -Recurse -Include *.msi -Path "${{ github.workspace }}" | ForEach-Object {
             Copy-Item $_.FullName -Destination $Out
           }
