@@ -1,0 +1,159 @@
+name: Build Nextcloud Desktop (Windows, Qt6, Multi-lang)
+
+on:
+  workflow_dispatch:
+    inputs:
+      desktop_ref:
+        description: "nextcloud/desktop 的构建分支或标签（例如 v3.13.1 或 master）"
+        required: false
+        default: "master"
+      build_msi:
+        description: "是否打包 MSI (需要 WiX)"
+        required: false
+        default: "true"
+      sign_binaries:
+        description: "是否代码签名（需要提供证书与密码 Secrets）"
+        required: false
+        default: "false"
+
+jobs:
+  build-win:
+    runs-on: windows-2022
+    env:
+      CRAFT_ROOT: C:\CraftRoot
+      QT_PLUGIN_PATH: C:\CraftRoot\bin\plugins
+      CMAKE_PREFIX_PATH: C:\CraftRoot
+      DESKTOP_SRC: ${{ github.workspace }}\desktop
+      BUILD_DIR:   ${{ github.workspace }}\build
+      BLUEPRINTS:  ${{ github.workspace }}\desktop-client-blueprints
+      CLIENT_BUILDING: ${{ github.workspace }}\client-building
+
+    steps:
+      - name: Checkout CI repo (this repo)
+        uses: actions/checkout@v4
+
+      - name: Install basic tools (Chocolatey)
+        shell: powershell
+        run: |
+          choco install -y git cmake ninja 7zip inkscape
+          if ('${{ github.event.inputs.build_msi }}' -eq 'true') {
+            choco install -y wixtoolset
+          }
+
+      - name: Setup Python (for Craft)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Craft (KDE)
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
+          python -m pip install --upgrade certifi
+          iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1'))
+
+      - name: Cache Craft downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\CraftRoot\download
+            C:\Users\runneradmin\AppData\Local\craft
+          key: craft-${{ runner.os }}-qt6-${{ hashFiles('**/blueprints.lock', '**/craft.lock') }}
+          restore-keys: |
+            craft-${{ runner.os }}-qt6-
+
+      - name: Init Craft env & add Nextcloud blueprints
+        shell: powershell
+        run: |
+          & $env:CRAFT_ROOT\craft\craftenv.ps1
+          craft --version
+          craft --add-blueprint-repository https://github.com/nextcloud/desktop-client-blueprints.git
+          craft craft
+          craft --install-deps nextcloud-client
+
+      - name: Checkout Nextcloud desktop source
+        uses: actions/checkout@v4
+        with:
+          repository: nextcloud/desktop
+          ref: ${{ github.event.inputs.desktop_ref }}
+          path: desktop
+          submodules: true
+
+      - name: Configure MSVC env (VS2022 x64)
+        shell: cmd
+        run: |
+          "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64 && echo VS env ready
+
+      - name: CMake configure (Ninja, RelWithDebInfo)
+        shell: cmd
+        run: |
+          mkdir "%BUILD_DIR%"
+          cd /d "%BUILD_DIR%"
+          cmake -G Ninja ^
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
+            -DCMAKE_PREFIX_PATH="%CMAKE_PREFIX_PATH%" ^
+            -DCMAKE_INSTALL_PREFIX="%BUILD_DIR%\install" ^
+            -DNC_WITH_CRASHREPORTER=OFF ^
+            "%DESKTOP_SRC%"
+
+      - name: Build (client + translations)
+        shell: cmd
+        run: |
+          cd /d "%BUILD_DIR%"
+          cmake --build . --target release_translations --config RelWithDebInfo
+          cmake --build . --config RelWithDebInfo
+          cmake --install . --config RelWithDebInfo
+
+      - name: Package with client-building (optional MSI)
+        if: ${{ github.event.inputs.build_msi == 'true' }}
+        shell: powershell
+        run: |
+          git clone https://github.com/nextcloud/client-building.git "$env:CLIENT_BUILDING"
+          # 环境变量覆盖：不开 NSIS、仅 MSI、默认不签名（可通过 inputs 切换）
+          $env:BUILD_INSTALLER = "0"
+          $env:BUILD_INSTALLER_MSI = "1"
+          $env:USE_CODE_SIGNING = if ('${{ github.event.inputs.sign_binaries }}' -eq 'true') { "1" } else { "0" }
+          # 如果需要签名：设置证书与密码（在仓库 Secrets 中提供）
+          if ($env:USE_CODE_SIGNING -eq "1") {
+            $env:WINDOWS_SIGNING_CERT_B64 = "${{ secrets.WINDOWS_SIGNING_CERT_B64 }}"
+            $env:WINDOWS_SIGNING_CERT_PASS = "${{ secrets.WINDOWS_SIGNING_CERT_PASS }}"
+            # 还原证书到临时 PFX（可按你的签名方案调整）
+            $pfx = "$env:RUNNER_TEMP\codesign.pfx"
+            [IO.File]::WriteAllBytes($pfx,[Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_B64))
+            $env:CODESIGN_PFX = $pfx
+          }
+          # 运行收集与 MSI 打包脚本
+          cd "$env:CLIENT_BUILDING"
+          ./build-installer-collect.bat
+          ./build-installer-msi.bat
+
+      - name: Gather artifacts
+        shell: powershell
+        run: |
+          $Out = "${{ github.workspace }}\artifacts"
+          New-Item -ItemType Directory -Force -Path $Out | Out-Null
+          # 可执行与依赖（安装目录）
+          if (Test-Path "$env:BUILD_DIR\install") {
+            7z a -r "$Out\nextcloud-desktop-install-tree.zip" "$env:BUILD_DIR\install\*"
+          }
+          # 翻译资源（证明多语言）
+          if (Test-Path "$env:BUILD_DIR\install\translations") {
+            7z a -r "$Out\translations-qm.zip" "$env:BUILD_DIR\install\translations\*.qm"
+          } else {
+            # 常见位置（不同版本可能在 resources/translations）
+            if (Test-Path "$env:BUILD_DIR\resources\translations") {
+              7z a -r "$Out\translations-qm.zip" "$env:BUILD_DIR\resources\translations\*.qm"
+            }
+          }
+          # MSI（若已打包）
+          Get-ChildItem -Recurse -Include *.msi -Path "${{ github.workspace }}" | ForEach-Object {
+            Copy-Item $_.FullName -Destination $Out
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextcloud-desktop-windows
+          path: artifacts/**
+          if-no-files-found: warn
+          retention-days: 14
