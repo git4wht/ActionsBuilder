@@ -44,15 +44,22 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
+      
+      - name: Cleanup existing Craft directory
+        shell: powershell
+        run: |
+          $craftHome = "$env:USERPROFILE\.craft"
+          if (Test-Path $craftHome) {
+              Write-Host "Removing existing Craft directory..."
+              Remove-Item -Recurse -Force $craftHome
+          }
+      
       - name: Install Craft (KDE)
         shell: powershell
         run: |
           Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
           python -m pip install --upgrade certifi
-          $craftScript = 'https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1'
-          $command = "& { $(iwr $craftScript) } -Yes"
-          Invoke-Expression $command
+          iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1'))
 
 
       - name: Cache Craft downloads
