@@ -20,7 +20,6 @@ jobs:
   build-win:
     runs-on: windows-2022
     env:
-      # 给 CRAFT_ROOT 动态加 run_id，避免和上一次构建冲突
       CRAFT_ROOT: C:\CraftRoot
       QT_PLUGIN_PATH: C:\CraftRoot\bin\plugins
       CMAKE_PREFIX_PATH: C:\CraftRoot
@@ -81,7 +80,7 @@ jobs:
       - name: Init Craft env & add Nextcloud blueprints
         shell: powershell
         run: |
-          & $env:CRAFT_ROOT\etc\craftenv.ps1
+          & $env:CRAFT_ROOT\craft\craftenv.ps1
           craft --version
           craft --add-blueprint-repository https://github.com/nextcloud/desktop-client-blueprints.git
           craft craft
