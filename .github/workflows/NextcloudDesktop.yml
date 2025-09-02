@@ -61,6 +61,7 @@ jobs:
         run: |
           # Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
           # python -m pip install --upgrade certifi
+          $env:CRAFT_TARGET = "x86_64-w64-mingw32"
           $craftScript = "$env:TEMP\install_craft.ps1"
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1" -OutFile $craftScript
           powershell -NoProfile -ExecutionPolicy Bypass -File $craftScript `
