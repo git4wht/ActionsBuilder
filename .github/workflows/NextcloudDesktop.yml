@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       desktop_ref:
-        description: "nextcloud/desktop 的构建分支或标签（例如 v3.13.1 或 master）"
+        description: "Nextcloud Desktop 构建分支或标签 (e.g., v3.13.1 或 master)"
         required: false
         default: "master"
       build_msi:
@@ -12,7 +12,7 @@ on:
         required: false
         default: "true"
       sign_binaries:
-        description: "是否代码签名（需要提供证书与密码 Secrets）"
+        description: "是否代码签名 (需要 Secrets: WINDOWS_SIGNING_CERT_B64 / WINDOWS_SIGNING_CERT_PASS)"
         required: false
         default: "false"
 
@@ -21,15 +21,12 @@ jobs:
     runs-on: windows-2022
     env:
       CRAFT_ROOT: C:\CraftRoot
-      QT_PLUGIN_PATH: C:\CraftRoot\bin\plugins
-      CMAKE_PREFIX_PATH: C:\CraftRoot
+      BUILD_DIR: ${{ github.workspace }}\build
       DESKTOP_SRC: ${{ github.workspace }}\desktop
-      BUILD_DIR:   ${{ github.workspace }}\build
-      BLUEPRINTS:  ${{ github.workspace }}\desktop-client-blueprints
       CLIENT_BUILDING: ${{ github.workspace }}\client-building
 
     steps:
-      - name: Checkout CI repo (this repo)
+      - name: Checkout CI repo
         uses: actions/checkout@v4
 
       - name: Install basic tools (Chocolatey)
@@ -40,36 +37,14 @@ jobs:
             choco install -y wixtoolset
           }
 
-      - name: Setup Python (for Craft)
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
-      # - name: Cleanup existing Craft directories
-      #   shell: powershell
-      #   run: |
-      #     $dirs = @("$env:CRAFT_ROOT", "$env:USERPROFILE\.craft")
-      #     foreach ($d in $dirs) {
-      #       if (Test-Path $d) {
-      #         Write-Host "Removing existing Craft directory: $d"
-      #         Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue
-      #       }
-      #     }
-
-      - name: Install Craft (KDE)
-        shell: powershell
-        run: |
-          # Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force
-          # python -m pip install --upgrade certifi
-          $env:CRAFT_TARGET = "x86_64-w64-mingw32"
-          $craftScript = "$env:TEMP\install_craft.ps1"
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1" -OutFile $craftScript
-          powershell -NoProfile -ExecutionPolicy Bypass -File $craftScript `
-           -root "$env:CRAFT_ROOT" `
-           -use-defaults
-
-      - name: Cache Craft downloads
+      - name: Restore Craft cache
         uses: actions/cache@v4
+        id: craft-cache
         with:
           path: |
             ${{ env.CRAFT_ROOT }}\download
@@ -78,16 +53,27 @@ jobs:
           restore-keys: |
             craft-${{ runner.os }}-qt6-
 
-      - name: Init Craft env & add Nextcloud blueprints
+      - name: Install Craft (unattended)
+        if: steps.craft-cache.outputs.cache-hit != 'true'
         shell: powershell
         run: |
-          & $env:CRAFT_ROOT\craft\craftenv.ps1
+          $craftScript = "$env:TEMP\install_craft.ps1"
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/KDE/craft/master/setup/install_craft.ps1" -OutFile $craftScript
+          powershell -NoProfile -ExecutionPolicy Bypass -File $craftScript `
+            -root "$env:CRAFT_ROOT" `
+            -use-defaults
+          New-Item -ItemType File -Force -Path craft.lock | Out-Null
+
+      - name: Init Craft & configure MinGW target
+        shell: powershell
+        run: |
+          & "$env:CRAFT_ROOT\etc\craftenv.ps1"
+          craft config --set target x86_64-w64-mingw32
           craft --version
           craft --add-blueprint-repository https://github.com/nextcloud/desktop-client-blueprints.git
-          craft craft
           craft --install-deps nextcloud-client
 
-      - name: Checkout Nextcloud desktop source
+      - name: Checkout Nextcloud Desktop source
         uses: actions/checkout@v4
         with:
           repository: nextcloud/desktop
@@ -96,60 +82,62 @@ jobs:
           submodules: true
 
       - name: Configure MSVC env (VS2022 x64)
-        shell: cmd
+        shell: pwsh
         run: |
-          "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64 && echo VS env ready
+          $vsVars = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
+          if (Test-Path $vsVars) {
+            cmd /c "`"$vsVars`" x64 && set" | Out-String | Invoke-Expression
+          }
 
       - name: CMake configure (Ninja, RelWithDebInfo)
-        shell: cmd
+        shell: pwsh
         run: |
-          mkdir "%BUILD_DIR%"
-          cd /d "%BUILD_DIR%"
-          cmake -G Ninja ^
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
-            -DCMAKE_PREFIX_PATH="%CMAKE_PREFIX_PATH%" ^
-            -DCMAKE_INSTALL_PREFIX="%BUILD_DIR%\install" ^
-            -DNC_WITH_CRASHREPORTER=OFF ^
-            "%DESKTOP_SRC%"
+          mkdir -Force $env:BUILD_DIR
+          cd $env:BUILD_DIR
+          cmake -G Ninja `
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DCMAKE_PREFIX_PATH="$env:CRAFT_ROOT" `
+            -DCMAKE_INSTALL_PREFIX="$env:BUILD_DIR\install" `
+            -DNC_WITH_CRASHREPORTER=OFF `
+            "$env:DESKTOP_SRC"
 
-      - name: Build (client + translations)
-        shell: cmd
+      - name: Build Nextcloud Desktop
+        shell: pwsh
         run: |
-          cd /d "%BUILD_DIR%"
-          cmake --build . --target release_translations --config RelWithDebInfo
+          cd $env:BUILD_DIR
           cmake --build . --config RelWithDebInfo
           cmake --install . --config RelWithDebInfo
 
-      - name: Package with client-building (optional MSI)
+      - name: Package with client-building (MSI optional)
         if: ${{ github.event.inputs.build_msi == 'true' }}
-        shell: powershell
+        shell: pwsh
         run: |
-          git clone https://github.com/nextcloud/client-building.git "$env:CLIENT_BUILDING"
+          git clone https://github.com/nextcloud/client-building.git $env:CLIENT_BUILDING
           $env:BUILD_INSTALLER = "0"
           $env:BUILD_INSTALLER_MSI = "1"
-          $env:USE_CODE_SIGNING = if ('${{ github.event.inputs.sign_binaries }}' -eq 'true') { "1" } else { "0" }
-          if ($env:USE_CODE_SIGNING -eq "1") {
+          if ('${{ github.event.inputs.sign_binaries }}' -eq 'true') {
+            $env:USE_CODE_SIGNING = "1"
             $env:WINDOWS_SIGNING_CERT_B64 = "${{ secrets.WINDOWS_SIGNING_CERT_B64 }}"
             $env:WINDOWS_SIGNING_CERT_PASS = "${{ secrets.WINDOWS_SIGNING_CERT_PASS }}"
             $pfx = "$env:RUNNER_TEMP\codesign.pfx"
             [IO.File]::WriteAllBytes($pfx,[Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_B64))
             $env:CODESIGN_PFX = $pfx
+          } else {
+            $env:USE_CODE_SIGNING = "0"
           }
-          cd "$env:CLIENT_BUILDING"
+          cd $env:CLIENT_BUILDING
           ./build-installer-collect.bat
           ./build-installer-msi.bat
 
       - name: Gather artifacts
-        shell: powershell
+        shell: pwsh
         run: |
           $Out = "${{ github.workspace }}\artifacts"
           New-Item -ItemType Directory -Force -Path $Out | Out-Null
           if (Test-Path "$env:BUILD_DIR\install") {
             7z a -r "$Out\nextcloud-desktop-install-tree.zip" "$env:BUILD_DIR\install\*"
           }
-          if (Test-Path "$env:BUILD_DIR\install\translations") {
-            7z a -r "$Out\translations-qm.zip" "$env:BUILD_DIR\install\translations\*.qm"
-          } elseif (Test-Path "$env:BUILD_DIR\resources\translations") {
+          if (Test-Path "$env:BUILD_DIR\resources\translations") {
             7z a -r "$Out\translations-qm.zip" "$env:BUILD_DIR\resources\translations\*.qm"
           }
           Get-ChildItem -Recurse -Include *.msi -Path "${{ github.workspace }}" | ForEach-Object {
