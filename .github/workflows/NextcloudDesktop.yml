@@ -67,7 +67,7 @@ jobs:
       - name: Init Craft & configure MinGW target
         shell: powershell
         run: |
-          & "$env:CRAFT_ROOT\etc\craftenv.ps1"
+          & "$env:CRAFT_ROOT\craft\craftenv.ps1"
           craft config --set target x86_64-w64-mingw32
           craft --version
           craft --add-blueprint-repository https://github.com/nextcloud/desktop-client-blueprints.git
