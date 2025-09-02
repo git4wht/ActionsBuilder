@@ -81,7 +81,7 @@ jobs:
       - name: Init Craft env & add Nextcloud blueprints
         shell: powershell
         run: |
-          & $env:CRAFT_ROOT\craft\craftenv.ps1
+          & $env:CRAFT_ROOT\etc\craftenv.ps1
           craft --version
           craft --add-blueprint-repository https://github.com/nextcloud/desktop-client-blueprints.git
           craft craft
