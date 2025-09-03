@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: 2022 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Windows Build and Test
+on:
+  workflow_dispatch:
+    inputs:
+      desktop_ref:
+        description: "Nextcloud Desktop 构建分支或标签 (e.g., v3.13.1 或 master)"
+        required: false
+        default: "master"
+      build_msi:
+        description: "是否打包 MSI (需要 WiX)"
+        required: false
+        default: "true"
+      sign_binaries:
+        description: "是否代码签名 (需要 Secrets: WINDOWS_SIGNING_CERT_B64 / WINDOWS_SIGNING_CERT_PASS)"
+        required: false
+        default: "false"
+jobs:
+  build:
+    name: Windows Build and Test
+    runs-on: windows-2022
+    env:
+      CRAFT_TARGET: windows-msvc2022_64-cl
+      COBERTURA_COVERAGE_FILE: ${{ github.workspace }}\cobertura_coverage\coverage.xml
+      CRAFT_MASTER_LOCATION: ${{ github.workspace }}\CraftMaster
+      CRAFT_MASTER_CONFIG: ${{ github.workspace }}\craftmaster.ini
+      BUILD_DIR: ${{ github.workspace }}\build
+      DESKTOP_SRC: ${{ github.workspace }}\desktop
+      CLIENT_BUILDING: ${{ github.workspace }}\client-building
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Install Craft Master with Nextcloud Client Deps
+        shell: pwsh
+        run: |
+          & cmd /C "git clone -q --depth=1 https://invent.kde.org/packaging/craftmaster.git ${{ env.CRAFT_MASTER_LOCATION }} 2>&1"
+          
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+          
+          craft --add-blueprint-repository "https://github.com/nextcloud/craft-blueprints-kde.git|stable-3.17|"
+          craft --add-blueprint-repository "https://github.com/nextcloud/desktop-client-blueprints.git|stable-3.17|"
+          craft craft
+          craft --install-deps nextcloud-client
+          
+      - name: Cache Install OpenCppCoverage
+        id: cache-install-opencppcoverage
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: C:\Program Files\OpenCppCoverage
+          key: ${{ runner.os }}-cache-install-opencppcoverage
+          
+      - name: Install OpenCppCoverage
+        if: steps.cache-install-opencppcoverage.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          choco install opencppcoverage
+
+      #- name: Cache Install inkscape
+      #  id: cache-install-inkscape
+      #  uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      #  with:
+      #    path: C:\Program Files\inkscape
+      #    key: ${{ runner.os }}-cache-install-inkscape
+
+      - name: Install inkscape
+      #  if: steps.cache-install-inkscape.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          choco install inkscape
+
+      - name: Setup PATH
+        shell: pwsh
+        run: |
+          echo "C:\Program Files\OpenCppCoverage" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "${{ github.workspace }}\${{ env.CRAFT_TARGET }}\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Checkout Nextcloud Desktop source
+        uses: actions/checkout@v4
+        with:
+          repository: nextcloud/desktop
+          ref: ${{ github.event.inputs.desktop_ref }}
+          path: desktop
+          submodules: true
+   
+      - name: Compile
+        shell: pwsh
+        run: |
+          function craft() {
+              python "${{ env.CRAFT_MASTER_LOCATION }}\CraftMaster.py" --config "${{ env.CRAFT_MASTER_CONFIG }}" --target ${{ env.CRAFT_TARGET }} -c $args
+              if($LASTEXITCODE -ne 0) {exit $LASTEXITCODE}
+          }
+          
+          craft --src-dir ${{ env.DESKTOP_SRC }} nextcloud-client
